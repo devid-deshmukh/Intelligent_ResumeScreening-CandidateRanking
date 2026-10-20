@@ -87,13 +87,15 @@ def evaluate_all(jobs: pd.DataFrame, matches: pd.DataFrame, test_job_ids: list[s
         nice_to_have = set(_skills(job.get("nice_to_have_skills", [])))
         must_denominator = len(must_have) or 1
         nice_denominator = len(nice_to_have) or 1
-        skills = np.array([len(must_have & candidate) / must_denominator + 0.25 * len(nice_to_have & candidate) / nice_denominator for candidate in resume_skills])
+        required_coverage = np.array([len(must_have & candidate) / must_denominator for candidate in resume_skills])
+        preferred_coverage = np.array([len(nice_to_have & candidate) / nice_denominator for candidate in resume_skills])
+        skills = 0.75 * required_coverage + 0.25 * preferred_coverage
         seniority = str(job.get("seniority", "")).lower()
         industry = str(job.get("industry", "")).lower()
         learned_features = np.column_stack((
             similarities,
-            [len(must_have & candidate) / must_denominator for candidate in resume_skills],
-            [len(nice_to_have & candidate) / nice_denominator for candidate in resume_skills],
+            required_coverage,
+            preferred_coverage,
             resume_seniority == seniority,
             resume_industry == industry,
             resume_years,

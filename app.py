@@ -1,4 +1,6 @@
-"""Streamlit dashboard for the resume screening project."""
+"""Streamlit dashboard for dataset-backed resume screening."""
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -9,42 +11,43 @@ import pandas as pd
 import streamlit as st
 
 from src.data import load_jobs, load_matches, load_resumes
-from src.ranker import _skills, rank_resumes, skill_scores
+from src.job_config import job_from_existing, parse_skill_text, role_suggestions
+from src.ranker import _skills, rank_resumes
 from src.uploads import process_uploaded_resumes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MODELS_DIR = PROJECT_ROOT / "models"
 
-
-st.set_page_config(
-    page_title="TalentLens | Resume Ranking",
-    page_icon="TL",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-
+st.set_page_config(page_title="TalentLens | Resume Screening", page_icon="TL", layout="wide")
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
-    :root { --ink: #17212b; --muted: #65727e; --teal: #087f8c; --mint: #dff4ed; --line: #dfe7e8; --paper: #f5f8f7; }
-    .stApp { background: var(--paper); color: var(--ink); font-family: 'DM Sans', sans-serif; }
-    [data-testid="stSidebar"] { background: #122c35; }
-    [data-testid="stSidebar"] * { color: #edf8f5 !important; }
-    h1, h2, h3 { font-family: 'Space Grotesk', sans-serif; letter-spacing: 0; }
-    h1 { font-size: 2.4rem !important; margin-bottom: .25rem; }
-    .eyebrow { color: var(--teal); font-size: .76rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-    .subtitle { color: var(--muted); font-size: 1.05rem; margin-bottom: 1.4rem; }
-    .metric-card { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.1rem; min-height: 105px; }
-    .metric-label { color: var(--muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; }
-    .metric-value { color: var(--ink); font-family: 'Space Grotesk', sans-serif; font-size: 1.8rem; font-weight: 700; margin-top: .3rem; }
-    .candidate-card { background: white; border-left: 4px solid var(--teal); border-radius: 8px; border-top: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 1rem 1.1rem; margin: .5rem 0; }
-    .candidate-name { font-family: 'Space Grotesk', sans-serif; font-size: 1.05rem; font-weight: 700; }
-    .tag { background: var(--mint); border-radius: 999px; color: #176252; display: inline-block; font-size: .75rem; margin: .2rem .25rem .1rem 0; padding: .25rem .5rem; }
-    .detail-box { background: white; border: 1px solid var(--line); border-radius: 8px; padding: 1.2rem; }
-    div[data-testid="stMetric"] { background: white; border: 1px solid var(--line); border-radius: 8px; padding: .8rem; }
+    :root { --ink:#17212b; --muted:#65727e; --teal:#087f8c; --mint:#dff4ed; --line:#dfe7e8; --paper:#f5f8f7; }
+    .stApp { background:var(--paper); color:var(--ink); }
+    [data-testid="stSidebar"] { background:#122c35; }
+    [data-testid="stSidebar"] * { color:#edf8f5 !important; }
+    [data-testid="stMain"] [data-testid="stWidgetLabel"] p,
+    [data-testid="stMain"] [data-testid="stWidgetLabel"] label { color:var(--ink) !important; }
+    [data-testid="stMain"] input,
+    [data-testid="stMain"] textarea,
+    [data-testid="stMain"] [data-baseweb="select"] > div {
+        background:#ffffff !important;
+        color:var(--ink) !important;
+        border-color:#b9c8cc !important;
+    }
+    [data-testid="stMain"] input::placeholder,
+    [data-testid="stMain"] textarea::placeholder { color:#71808a !important; opacity:1; }
+    [data-testid="stMain"] input:focus,
+    [data-testid="stMain"] textarea:focus { color:var(--ink) !important; }
+    [data-testid="stMain"] [data-baseweb="select"] * { color:var(--ink) !important; }
+    h1,h2,h3 { letter-spacing:0; }
+    .eyebrow { color:var(--teal); font-size:.76rem; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+    .subtitle { color:var(--muted); font-size:1.05rem; margin-bottom:1.4rem; }
+    .metric-card { background:white; border:1px solid var(--line); border-radius:8px; padding:1rem; min-height:100px; }
+    .metric-label { color:var(--muted); font-size:.78rem; text-transform:uppercase; letter-spacing:.07em; }
+    .metric-value { color:var(--ink); font-size:1.8rem; font-weight:700; margin-top:.3rem; }
+    .tag { background:var(--mint); border-radius:999px; color:#176252; display:inline-block; font-size:.75rem; margin:.2rem .25rem .1rem 0; padding:.25rem .5rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -53,21 +56,18 @@ st.markdown(
 
 @st.cache_data(show_spinner=False)
 def get_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Load the three local datasets once per Streamlit session."""
     return load_resumes(), load_jobs(), load_matches()
 
 
 @st.cache_data(show_spinner=False)
 def get_metrics() -> dict[str, dict[str, float]]:
-    """Read the metrics generated by the existing evaluation pipeline."""
-    metrics_path = MODELS_DIR / "metrics.json"
-    if not metrics_path.exists():
+    path = MODELS_DIR / "metrics.json"
+    if not path.exists():
         raise FileNotFoundError("models/metrics.json is missing. Run python -m src.evaluate first.")
-    return pd.read_json(metrics_path).to_dict(orient="index")
+    return pd.read_json(path).to_dict(orient="index")
 
 
 def format_skills(value: Any) -> str:
-    """Format list-like skills for tables and downloads."""
     values = value.tolist() if hasattr(value, "tolist") else value
     if isinstance(values, str):
         values = [values]
@@ -75,263 +75,258 @@ def format_skills(value: Any) -> str:
 
 
 def metric_card(label: str, value: str) -> None:
-    st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>', unsafe_allow_html=True)
-
-
-def show_sidebar(jobs: pd.DataFrame) -> tuple[str, str, int, float]:
-    """Render global controls and return their values."""
-    st.sidebar.markdown("## TalentLens")
-    st.sidebar.caption("Intelligent resume screening")
-    st.sidebar.divider()
-    job_labels = [f"{row.job_id}  |  {row.job_title}" for row in jobs.itertuples()]
-    selected_label = st.sidebar.selectbox("Select a job", job_labels)
-    method = st.sidebar.selectbox("Ranking method", ["combined", "skills", "tfidf", "learned"], format_func=lambda value: value.title())
-    top_k = st.sidebar.slider("Candidates to display", 5, 30, 10)
-    combined_weight = 0.7
-    if method == "combined":
-        combined_weight = st.sidebar.slider("Text similarity weight", 0.0, 1.0, 0.7, 0.05)
-    return selected_label.split("  |  ")[0], method, top_k, combined_weight
-
-
-def ranking_page(resumes: pd.DataFrame, jobs: pd.DataFrame, matches: pd.DataFrame) -> None:
-    """Render the candidate ranking workflow."""
-    job_id, method, top_k, combined_weight = show_sidebar(jobs)
-    jobs_by_id = jobs.set_index("job_id")
-    job = jobs_by_id.loc[job_id]
-    st.markdown('<div class="eyebrow">Candidate intelligence</div>', unsafe_allow_html=True)
-    st.title("Find the strongest match")
-    st.markdown(f'<div class="subtitle">{job.job_title} · {job.seniority} · {job.industry}</div>', unsafe_allow_html=True)
-    overview, candidates = st.tabs(["Job overview", "Ranked candidates"])
-    with overview:
-        first, second, third = st.columns(3)
-        with first:
-            metric_card("Must-have skills", str(len(_skills(job.must_have_skills))))
-        with second:
-            metric_card("Nice-to-have skills", str(len(_skills(job.nice_to_have_skills))))
-        with third:
-            metric_card("Relevant resumes", "30 ground truth")
-        st.markdown("### Role brief")
-        st.write(job.description)
-        st.markdown("### Required capabilities")
-        st.markdown(" ".join(f'<span class="tag">{skill}</span>' for skill in _skills(job.must_have_skills)), unsafe_allow_html=True)
-        st.markdown("### Preferred capabilities")
-        st.markdown(" ".join(f'<span class="tag">{skill}</span>' for skill in _skills(job.nice_to_have_skills)) or "None listed", unsafe_allow_html=True)
-    with candidates:
-        try:
-            ranked = rank_resumes(job, top_k=len(resumes), method=method, combined_weight=combined_weight, resumes=resumes)
-        except FileNotFoundError as error:
-            st.error(f"Ranking artifacts are unavailable: {error}. Run training first.")
-            return
-        except Exception as error:
-            st.error(f"Could not rank candidates: {error}")
-            return
-        st.markdown("### Refine results")
-        filter_one, filter_two, filter_three = st.columns(3)
-        with filter_one:
-            industries = sorted(ranked.industry.dropna().astype(str).unique())
-            selected_industries = st.multiselect("Industry", industries)
-        with filter_two:
-            seniorities = sorted(ranked.seniority.dropna().astype(str).unique())
-            selected_seniorities = st.multiselect("Seniority", seniorities)
-        with filter_three:
-            min_years = st.number_input("Minimum experience", min_value=0, max_value=50, value=0)
-        filtered = ranked.copy()
-        if selected_industries:
-            filtered = filtered[filtered.industry.isin(selected_industries)]
-        if selected_seniorities:
-            filtered = filtered[filtered.seniority.isin(selected_seniorities)]
-        filtered = filtered[filtered.years_experience >= min_years].head(top_k).copy()
-        if filtered.empty:
-            st.warning("No candidates match the current filters.")
-            return
-        relevant = set(matches.loc[matches.job_id == job_id, "relevant_resume_ids"].iloc[0])
-        hit_count = sum(candidate_id in relevant for candidate_id in filtered.resume_id)
-        a, b, c = st.columns(3)
-        with a:
-            metric_card("Candidates shown", str(len(filtered)))
-        with b:
-            metric_card("Matched required skills", f"{filtered.matched_skills.map(bool).sum()} / {len(filtered)}")
-        with c:
-            metric_card("Ground-truth hits", f"{hit_count} / {len(filtered)}")
-        display = filtered[["resume_id", "role", "seniority", "industry", "years_experience", "score", "matched_skills"]].copy()
-        display["matched_skills"] = display.matched_skills.map(format_skills)
-        display = display.rename(columns={"resume_id": "Candidate ID", "role": "Role", "seniority": "Level", "industry": "Industry", "years_experience": "Years", "score": "Ranking score", "matched_skills": "Matched skills"})
-        st.dataframe(display, use_container_width=True, hide_index=True, column_config={"Ranking score": st.column_config.NumberColumn(format="%.4f")})
-        st.download_button("Download ranked results (CSV)", display.to_csv(index=False).encode("utf-8"), f"{job_id}_ranked_candidates.csv", "text/csv")
-        st.markdown("### Candidate details")
-        candidate_id = st.selectbox("Choose a candidate", filtered.resume_id.tolist())
-        candidate = resumes.set_index("resume_id").loc[candidate_id]
-        score = float(filtered.loc[filtered.resume_id == candidate_id, "score"].iloc[0])
-        _, matched = skill_scores(job, candidate)
-        candidate_skills = set(_skills(candidate.skills))
-        required = _skills(job.must_have_skills)
-        missing = [skill for skill in required if skill not in candidate_skills]
-        left, right = st.columns([1, 1])
-        with left:
-            st.markdown('<div class="detail-box">', unsafe_allow_html=True)
-            st.markdown(f"### {candidate_id}")
-            st.write(f"**Role:** {candidate.role}")
-            st.write(f"**Seniority:** {candidate.seniority}")
-            st.write(f"**Industry:** {candidate.industry}")
-            st.write(f"**Experience:** {candidate.years_experience} years")
-            st.write(f"**Education:** {candidate.education}")
-            st.write(f"**Summary:** {candidate.summary}")
-            st.markdown("</div>", unsafe_allow_html=True)
-        with right:
-            st.markdown('<div class="detail-box">', unsafe_allow_html=True)
-            st.metric("Ranking score", f"{score:.4f}")
-            st.markdown(f"**Matched skills:** {format_skills(matched)}")
-            st.markdown(f"**Missing required skills:** {format_skills(missing)}")
-            explanation = {"tfidf": "TF-IDF cosine similarity between the job text and leakage-safe resume text.", "skills": "Must-have skill coverage plus a 25% weighted nice-to-have bonus.", "combined": f"{combined_weight:.0%} TF-IDF similarity plus {(1 - combined_weight):.0%} skill overlap.", "learned": "LogisticRegression probability from text similarity, skill overlap, seniority, industry, and experience."}[method]
-            st.markdown(f"**How this score was produced:** {explanation}")
-            st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _parse_skills(value: str) -> list[str]:
-    """Parse comma, newline, or semicolon-separated skills from the upload form."""
-    return [item.strip() for item in value.replace(";", ",").replace("\n", ",").split(",") if item.strip()]
-
-
-def upload_ranking_page() -> None:
-    """Render ranking for resumes supplied by a hiring manager."""
-    st.markdown('<div class="eyebrow">Custom resume screening</div>', unsafe_allow_html=True)
-    st.title("Upload resumes and rank candidates")
     st.markdown(
-        '<div class="subtitle">Score uploaded resumes against a job description using the existing ranking artifacts. '
-        "These scores are not evaluated against known relevance labels.</div>",
+        f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div></div>',
         unsafe_allow_html=True,
     )
+
+
+def dashboard_page(resumes: pd.DataFrame, jobs: pd.DataFrame, matches: pd.DataFrame) -> None:
+    st.markdown('<div class="eyebrow">TalentLens overview</div>', unsafe_allow_html=True)
+    st.title("Intelligent Resume Screening")
+    st.markdown(
+        '<div class="subtitle">A dataset-backed demonstration of resume preprocessing, candidate ranking, and model evaluation.</div>',
+        unsafe_allow_html=True,
+    )
+    one, two, three, four = st.columns(4)
+    with one:
+        metric_card("Jobs in dataset", f"{len(jobs):,}")
+    with two:
+        metric_card("Resumes in dataset", f"{len(resumes):,}")
+    with three:
+        metric_card("Known job matches", f"{len(matches):,}")
+    with four:
+        metric_card("Job industries", str(jobs["industry"].nunique()))
+    st.markdown("### How to use the demonstration")
+    st.write(
+        "Use **Screen Candidates** to select a real dataset job or create a custom role, upload PDF/DOCX resumes, "
+        "review extraction results, rank candidates, and export a shortlist. Use **Model Evaluation** to inspect "
+        "saved held-out metrics for the synthetic dataset."
+    )
+    st.info("Uploaded resumes receive genuine model scores, but they do not have dataset ground-truth labels.")
+    st.markdown("### Dataset snapshot")
     left, right = st.columns(2)
     with left:
-        job_title = st.text_input("Job title", placeholder="e.g. Senior Data Engineer")
-        required_skills = st.text_area("Required skills", placeholder="Python, SQL, AWS")
-        preferred_skills = st.text_area("Preferred skills", placeholder="Docker, Airflow")
+        st.dataframe(jobs["job_title"].value_counts().head(10).rename("Jobs"), use_container_width=True)
     with right:
-        description = st.text_area("Job description", height=150)
-        experience_requirements = st.text_input("Experience requirements", placeholder="e.g. 5+ years of experience")
-        method = st.selectbox(
-            "Ranking method",
-            ["combined", "skills", "tfidf", "learned"],
-            format_func=lambda value: value.title(),
-            key="upload_method",
-        )
-    uploaded_files = st.file_uploader(
-        "Upload resumes",
-        type=["pdf", "docx"],
-        accept_multiple_files=True,
-        help="PDF and DOCX files only. Empty or unreadable files will be reported individually.",
-    )
-    top_k = st.slider("Candidates to display", 1, 100, 10, key="upload_top_k")
-    if not uploaded_files:
-        st.info("Upload one or more PDF or DOCX resumes to begin.")
-        return
-    if not job_title.strip():
-        st.warning("Enter a job title before processing resumes.")
-        return
-    job = {
-        "job_title": job_title.strip(),
-        "description": f"{description.strip()} {experience_requirements.strip()}".strip(),
-        "must_have_skills": _parse_skills(required_skills),
-        "nice_to_have_skills": _parse_skills(preferred_skills),
+        st.dataframe(resumes["role"].value_counts().head(10).rename("Resumes"), use_container_width=True)
+
+
+def _job_configuration(jobs: pd.DataFrame) -> dict[str, Any] | None:
+    st.markdown("### 1. Configure the job")
+    source = st.radio("Job source", ["Existing dataset job", "Custom job"], horizontal=True)
+    if source == "Existing dataset job":
+        labels = [f"{row.job_id} | {row.job_title}" for row in jobs.itertuples()]
+        selected = st.selectbox("Select an existing job", labels)
+        row = jobs.set_index("job_id").loc[selected.split(" | ", 1)[0]]
+        base = job_from_existing(row)
+        if st.session_state.get("_active_existing_job_id") != base["job_id"]:
+            st.session_state[f"existing_title_{base['job_id']}"] = str(base["job_title"])
+            st.session_state[f"existing_description_{base['job_id']}"] = str(base["description"])
+            st.session_state[f"required_existing_{base['job_id']}"] = ", ".join(base["must_have_skills"])
+            st.session_state[f"preferred_existing_{base['job_id']}"] = ", ".join(base["nice_to_have_skills"])
+            st.session_state["_active_existing_job_id"] = base["job_id"]
+        st.caption(f"Dataset job: {base['job_title']} · {base['seniority']} · {base['industry']}")
+        title = st.text_input("Job title", value=str(base["job_title"]), key=f"existing_title_{base['job_id']}")
+        description = st.text_area("Job description", value=str(base["description"]), height=120, key=f"existing_description_{base['job_id']}")
+        default_required = ", ".join(base["must_have_skills"])
+        default_preferred = ", ".join(base["nice_to_have_skills"])
+        seniority = base["seniority"]
+        industry = base["industry"]
+        min_experience = 0.0
+        role = title
+    else:
+        title = st.text_input("Job title", placeholder="e.g. Senior Data Engineer", key="custom_title")
+        role = title
+        description = st.text_area("Job description", height=120, key="custom_description")
+        suggested_required, suggested_preferred = role_suggestions(role, jobs)
+        if suggested_required or suggested_preferred:
+            st.caption(
+                f"Suggestions for {role}: required: {format_skills(suggested_required)}; "
+                f"preferred: {format_skills(suggested_preferred)}"
+            )
+        if st.button("Apply role suggestions", key="apply_role_suggestions"):
+            st.session_state["custom_required"] = ", ".join(suggested_required)
+            st.session_state["custom_preferred"] = ", ".join(suggested_preferred)
+        default_required = st.session_state.get("custom_required", "")
+        default_preferred = st.session_state.get("custom_preferred", "")
+        seniority = st.selectbox("Seniority", ["Not specified", "Junior", "Mid", "Senior", "Lead", "Principal"])
+        industry = st.text_input("Industry (optional)", key="custom_industry")
+        min_experience = st.number_input("Minimum relevant experience (years)", min_value=0.0, max_value=50.0, value=0.0, step=0.5)
+    if source == "Existing dataset job":
+        required_key = f"required_existing_{base['job_id']}"
+        preferred_key = f"preferred_existing_{base['job_id']}"
+    else:
+        required_key = "required_custom"
+        preferred_key = "preferred_custom"
+    required_text = st.text_area("Required skills", value=default_required, key=required_key)
+    preferred_text = st.text_area("Preferred skills", value=default_preferred, key=preferred_key)
+    required = parse_skill_text(required_text)
+    preferred = parse_skill_text(preferred_text)
+    if not title.strip():
+        st.warning("Enter a job title before continuing.")
+        return None
+    return {
+        "job_title": title.strip(),
+        "description": description.strip(),
+        "must_have_skills": required,
+        "nice_to_have_skills": preferred,
+        "seniority": "" if seniority == "Not specified" else seniority,
+        "industry": industry.strip(),
+        "minimum_experience": min_experience,
     }
-    file_signature = [
-        {"name": uploaded_file.name, "content": hashlib.sha256(uploaded_file.getvalue()).hexdigest()}
-        for uploaded_file in uploaded_files
-    ]
-    request_signature = hashlib.sha256(
-        json.dumps(
-            {"job": job, "method": method, "top_k": top_k, "files": file_signature},
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    if st.button("Rank uploaded resumes", type="primary"):
-        with st.spinner("Extracting resumes and calculating candidate scores..."):
+
+
+def _prepare_upload_results(
+    uploaded_files: list[Any],
+    job: dict[str, Any],
+    method: str,
+    top_k: int,
+    resumes: pd.DataFrame | None = None,
+    errors: list[dict[str, str]] | None = None,
+) -> None:
+    request = {
+        "job": job,
+        "method": method,
+        "top_k": top_k,
+        "files": [{"name": item.name, "hash": hashlib.sha256(item.getvalue()).hexdigest()} for item in uploaded_files],
+    }
+    signature = hashlib.sha256(json.dumps(request, sort_keys=True).encode("utf-8")).hexdigest()
+    with st.spinner("Extracting resumes and calculating candidate scores..."):
+        if resumes is None:
             resumes, errors = process_uploaded_resumes(uploaded_files, job)
-            ranked = pd.DataFrame()
-            if not resumes.empty:
-                try:
-                    ranked = rank_resumes(job, top_k=min(top_k, len(resumes)), method=method, resumes=resumes)
-                except FileNotFoundError as error:
-                    errors.append({"filename": "Ranking artifacts", "error": f"{error}. Run training first."})
-                except (ValueError, OSError) as error:
-                    errors.append({"filename": "Ranking pipeline", "error": str(error)})
-        st.session_state["upload_ranked_result"] = {
-            "signature": request_signature,
-            "ranked": ranked,
-            "errors": errors,
-        }
-    result = st.session_state.get("upload_ranked_result")
-    if not result or result["signature"] != request_signature:
-        st.info("Click **Rank uploaded resumes** to process and rank the selected files.")
-        return
-    errors = result["errors"]
-    ranked = result["ranked"]
-    if errors:
-        st.warning(f"{len(errors)} file(s) could not be processed.")
-        for error in errors:
-            st.error(f"{error['filename']}: {error['error']}")
+        errors = list(errors or [])
+        ranked = pd.DataFrame()
+        if not resumes.empty:
+            try:
+                ranked = rank_resumes(job, top_k=min(top_k, len(resumes)), method=method, resumes=resumes)
+            except (FileNotFoundError, OSError, ValueError) as error:
+                errors.append({"filename": "Ranking pipeline", "error": str(error)})
+    st.session_state["screening_result"] = {"signature": signature, "ranked": ranked, "errors": errors}
+
+
+def _show_screening_results(result: dict[str, Any], job: dict[str, Any], method: str) -> None:
+    for error in result["errors"]:
+        st.error(f"{error['filename']}: {error['error']}")
+    ranked = result["ranked"].copy()
     if ranked.empty:
-        st.error("No readable resumes were uploaded. Add a non-empty PDF or DOCX file and try again.")
+        st.error("No valid resumes remain. Upload a readable PDF or DOCX and try again.")
         return
     required = _skills(job["must_have_skills"])
     preferred = _skills(job["nice_to_have_skills"])
-    ranked["missing_required_skills"] = ranked.apply(
-        lambda row: [skill for skill in required if skill not in set(_skills(row.get("skills", [])))], axis=1
-    )
-    ranked["matched_required_skills"] = ranked.apply(
-        lambda row: [skill for skill in required if skill in set(_skills(row.get("skills", [])))], axis=1
-    )
-    ranked["matched_preferred_skills"] = ranked.apply(
-        lambda row: [skill for skill in preferred if skill in set(_skills(row.get("skills", [])))], axis=1
-    )
-    st.caption("Uploaded resumes are ranked by score only. No ground-truth relevance labels are available for these files.")
-    st.metric("Successfully ranked", len(ranked))
-    display = ranked[
-        ["filename", "score", "matched_required_skills", "missing_required_skills", "matched_preferred_skills", "years_experience"]
+    candidate_skills = ranked["skills"].map(lambda value: set(_skills(value)))
+    ranked["matched_required_skills"] = candidate_skills.map(lambda values: [skill for skill in required if skill in values])
+    ranked["missing_required_skills"] = candidate_skills.map(lambda values: [skill for skill in required if skill not in values])
+    ranked["matched_preferred_skills"] = candidate_skills.map(lambda values: [skill for skill in preferred if skill in values])
+    ranked["experience_match"] = ranked["years_experience"] >= float(job.get("minimum_experience", 0))
+    st.session_state["screening_ranked_display"] = ranked
+    st.markdown("### 3. Ranked candidates")
+    st.caption("Scores are ranking scores, not hiring probabilities. Uploaded resumes have no known ground-truth labels.")
+    shortlist = st.slider("Shortlist size", 1, len(ranked), min(10, len(ranked)), key="shortlist_size")
+    filtered = ranked.head(shortlist).copy()
+    min_score = st.slider("Minimum score", 0.0, max(1.0, float(ranked["score"].max())), 0.0, 0.01, key="minimum_score")
+    filtered = filtered[filtered["score"] >= min_score]
+    table = filtered[
+        [
+            "filename", "score", "text_similarity", "required_skill_coverage",
+            "preferred_skill_coverage", "matched_required_skills",
+            "missing_required_skills", "matched_preferred_skills", "years_experience",
+        ]
     ].copy()
-    display.insert(0, "rank", range(1, len(display) + 1))
-    display["matched_required_skills"] = display.matched_required_skills.map(format_skills)
-    display["missing_required_skills"] = display.missing_required_skills.map(format_skills)
-    display["matched_preferred_skills"] = display.matched_preferred_skills.map(format_skills)
-    display = display.rename(
+    table.insert(0, "rank", range(1, len(table) + 1))
+    for column in ("matched_required_skills", "missing_required_skills", "matched_preferred_skills"):
+        table[column] = table[column].map(format_skills)
+    table["score_percent"] = (table["score"] * 100).round(2)
+    table = table.rename(
         columns={
-            "rank": "Rank",
-            "filename": "Filename",
-            "score": "Ranking score",
+            "rank": "Rank", "filename": "Filename", "score": "Raw score", "score_percent": "Match score (%)",
+            "text_similarity": "Text similarity",
+            "required_skill_coverage": "Required skill coverage",
+            "preferred_skill_coverage": "Preferred skill coverage",
             "matched_required_skills": "Matched required skills",
-            "missing_required_skills": "Missing required skills",
-            "matched_preferred_skills": "Matched preferred skills",
-            "years_experience": "Extracted years",
+            "missing_required_skills": "Missing required skills", "matched_preferred_skills": "Matched preferred skills",
+            "years_experience": "Experience (years)",
         }
     )
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={"Ranking score": st.column_config.NumberColumn(format="%.4f")},
-    )
-    st.download_button(
-        "Download ranked results (CSV)",
-        display.to_csv(index=False).encode("utf-8"),
-        "uploaded_resume_rankings.csv",
-        "text/csv",
-    )
-    st.markdown("### Resume details")
-    for _, candidate in ranked.iterrows():
-        with st.expander(f"{candidate['filename']} - score {candidate['score']:.4f}"):
+    st.dataframe(table, use_container_width=True, hide_index=True, column_config={"Match score (%)": st.column_config.NumberColumn(format="%.2f")})
+    st.download_button("Download displayed shortlist (CSV)", table.to_csv(index=False).encode("utf-8"), "ranked_shortlist.csv", "text/csv")
+    st.markdown("### 4. Candidate details")
+    for _, candidate in filtered.iterrows():
+        with st.expander(f"{candidate['filename']} · score {candidate['score']:.4f}"):
             st.write(f"**Extracted experience:** {candidate['years_experience']} years")
+            st.write(f"**Seniority:** {candidate.get('seniority', '') or 'Not detected'}")
+            st.write(f"**Extracted skills:** {format_skills(candidate.get('skills', []))}")
             st.write(f"**Matched required skills:** {format_skills(candidate['matched_required_skills'])}")
-            st.write(f"**Matched preferred skills:** {format_skills(candidate['matched_preferred_skills'])}")
             st.write(f"**Missing required skills:** {format_skills(candidate['missing_required_skills'])}")
-            st.write("**Resume summary / extracted text:**")
-            st.write(candidate["summary"])
+            st.write(f"**Matched preferred skills:** {format_skills(candidate['matched_preferred_skills'])}")
+            st.write(
+                f"**Text similarity:** {candidate['text_similarity']:.4f} · "
+                f"**Required coverage:** {candidate['required_skill_coverage']:.2%} · "
+                f"**Preferred coverage:** {candidate['preferred_skill_coverage']:.2%}"
+            )
+            st.write(candidate.get("summary", "No extracted summary."))
+
+
+def screening_page(jobs: pd.DataFrame) -> None:
+    st.markdown('<div class="eyebrow">Screen candidates</div>', unsafe_allow_html=True)
+    st.title("Configure a role, upload resumes, and build a shortlist")
+    job = _job_configuration(jobs)
+    if job is None:
+        return
+    st.markdown("### 2. Upload and review files")
+    method = st.selectbox("Ranking method", ["combined", "skills", "tfidf", "learned"], format_func=str.title)
+    st.caption(
+        "Combined uses 70% TF-IDF job-text similarity, 22.5% required-skill coverage, and 7.5% preferred-skill coverage. "
+        "Choose Skills when explicit skill coverage should dominate."
+    )
+    top_k = st.slider("Maximum candidates to rank", 1, 100, 10)
+    uploaded_files = st.file_uploader("Upload PDF or DOCX resumes", type=["pdf", "docx"], accept_multiple_files=True)
+    if not uploaded_files:
+        st.info("Upload one or more resumes to continue.")
+        return
+    with st.spinner("Reading uploaded files..."):
+        preview_resumes, preview_errors = process_uploaded_resumes(uploaded_files, job)
+    st.write(f"{len(uploaded_files)} file(s) selected; {len(preview_resumes)} valid candidate(s) ready for ranking.")
+    if preview_errors:
+        st.warning(f"{len(preview_errors)} file(s) could not be read and will be excluded.")
+        for error in preview_errors:
+            st.error(f"{error['filename']}: {error['error']}")
+    if not preview_resumes.empty:
+        preview = preview_resumes[["filename", "role", "seniority", "years_experience", "skills"]].copy()
+        preview["skills"] = preview["skills"].map(format_skills)
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+    if st.button("Rank candidates", type="primary"):
+        _prepare_upload_results(uploaded_files, job, method, top_k, preview_resumes, preview_errors)
+    request = {
+        "job": job, "method": method, "top_k": top_k,
+        "files": [{"name": item.name, "hash": hashlib.sha256(item.getvalue()).hexdigest()} for item in uploaded_files],
+    }
+    signature = hashlib.sha256(json.dumps(request, sort_keys=True).encode("utf-8")).hexdigest()
+    result = st.session_state.get("screening_result")
+    if not result or result["signature"] != signature:
+        st.info("Click **Rank candidates** to process this upload batch.")
+        return
+    valid_count = len(result["ranked"])
+    st.success(f"{valid_count} valid candidate(s) processed.")
+    if result["errors"]:
+        st.warning(f"{len(result['errors'])} file(s) failed and were excluded.")
+    with st.expander("Developer diagnostics"):
+        st.write({
+            "job_title": job["job_title"],
+            "description_characters": len(job["description"]),
+            "required_skills": job["must_have_skills"],
+            "preferred_skills": job["nice_to_have_skills"],
+            "ranking_method": method,
+            "candidates_ranked": len(result["ranked"]),
+            "file_errors": len(result["errors"]),
+        })
+    _show_screening_results(result, job, method)
 
 
 def evaluation_page() -> None:
-    """Render the metrics generated by src.evaluate."""
-    st.markdown('<div class="eyebrow">Model validation</div>', unsafe_allow_html=True)
-    st.title("Evaluation lab")
-    st.markdown('<div class="subtitle">Held-out job performance from the existing evaluation pipeline</div>', unsafe_allow_html=True)
+    st.markdown('<div class="eyebrow">Model evaluation</div>', unsafe_allow_html=True)
+    st.title("Evaluation on the synthetic dataset")
+    st.markdown("These metrics use saved held-out job matches and are separate from uploaded-resume screening.")
     try:
         metrics = get_metrics()
     except FileNotFoundError as error:
@@ -340,35 +335,40 @@ def evaluation_page() -> None:
     table = pd.DataFrame(metrics).T
     table.index.name = "Method"
     st.dataframe(table.style.format("{:.4f}"), use_container_width=True)
-    st.markdown("### Method comparison")
-    chart_metric = st.selectbox("Metric to chart", list(table.columns), format_func=lambda value: value.replace("_", " ").title())
-    st.bar_chart(table[[chart_metric]].sort_values(chart_metric, ascending=False))
-    st.caption("Metrics are calculated on the held-out 20% of jobs using matches.parquet as ground truth. No values are fabricated in the dashboard.")
+    metric = st.selectbox("Metric to compare", list(table.columns), format_func=lambda value: value.replace("_", " ").title())
+    st.bar_chart(table[[metric]].sort_values(metric, ascending=False))
+    best = table[metric].idxmax()
+    st.success(f"Best saved method for {metric.replace('_', ' ')}: {best} ({table.loc[best, metric]:.4f})")
+    st.caption("Precision@10 is the fraction of the first ten results that are relevant; Recall@30 measures relevant resumes found in the first thirty; NDCG rewards relevant results near the top; MRR measures the first relevant result position.")
+
+
+def explorer_page(resumes: pd.DataFrame, jobs: pd.DataFrame) -> None:
+    st.markdown('<div class="eyebrow">Optional dataset explorer</div>', unsafe_allow_html=True)
+    st.title("Dataset explorer")
+    tab_jobs, tab_resumes = st.tabs(["Sample jobs", "Sample resumes"])
+    with tab_jobs:
+        st.dataframe(jobs.head(50), use_container_width=True, hide_index=True)
+    with tab_resumes:
+        st.dataframe(resumes.head(50), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
-    """Start the Streamlit application."""
-    page = st.sidebar.radio(
-        "Workspace",
-        ["Candidate ranking", "Upload resumes and rank candidates", "Model evaluation"],
-        label_visibility="collapsed",
-    )
-    if page == "Upload resumes and rank candidates":
-        upload_ranking_page()
-        return
     try:
         resumes, jobs, matches = get_data()
     except FileNotFoundError as error:
-        st.error(f"Dataset file unavailable: {error}")
-        st.info("Place resume.parquet, jobs.parquet, and matches.parquet in data/raw/.")
+        st.error(f"Dataset unavailable: {error}")
         return
-    if resumes.empty or jobs.empty:
-        st.warning("The dataset is empty. Add records to data/raw and reload the app.")
-        return
-    if page == "Candidate ranking":
-        ranking_page(resumes, jobs, matches)
-    else:
+    st.sidebar.markdown("## TalentLens")
+    st.sidebar.caption("Intelligent resume screening")
+    page = st.sidebar.radio("Workspace", ["Dashboard", "Screen Candidates", "Model Evaluation", "Dataset Explorer"])
+    if page == "Dashboard":
+        dashboard_page(resumes, jobs, matches)
+    elif page == "Screen Candidates":
+        screening_page(jobs)
+    elif page == "Model Evaluation":
         evaluation_page()
+    else:
+        explorer_page(resumes, jobs)
 
 
 if __name__ == "__main__":

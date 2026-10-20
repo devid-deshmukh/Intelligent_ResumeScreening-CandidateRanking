@@ -47,3 +47,26 @@ def test_learned_method_loads_saved_model(tmp_path):
     result = rank_resumes(sample_job(), top_k=2, method="learned", resumes=resumes, models_dir=tmp_path)
     assert len(result) == 2
     assert "score" in result
+
+
+def test_custom_required_skills_change_skill_ranking(tmp_path):
+    resumes = sample_resumes()
+    vectorizer = TfidfVectorizer()
+    vectorizer.fit([build_leakage_safe_resume_text(row) for _, row in resumes.iterrows()])
+    joblib.dump(vectorizer, tmp_path / "tfidf_vectorizer.joblib")
+    python_job = {"job_title": "Engineer", "must_have_skills": ["Python"], "nice_to_have_skills": []}
+    figma_job = {"job_title": "Designer", "must_have_skills": ["Figma"], "nice_to_have_skills": []}
+    assert rank_resumes(python_job, top_k=1, method="skills", resumes=resumes, models_dir=tmp_path).iloc[0]["resume_id"] == "R1"
+    assert rank_resumes(figma_job, top_k=1, method="skills", resumes=resumes, models_dir=tmp_path).iloc[0]["resume_id"] == "R2"
+
+
+def test_combined_score_exposes_bounded_explainable_components(tmp_path):
+    resumes = sample_resumes()
+    vectorizer = TfidfVectorizer()
+    vectorizer.fit([build_leakage_safe_resume_text(row) for _, row in resumes.iterrows()])
+    joblib.dump(vectorizer, tmp_path / "tfidf_vectorizer.joblib")
+    result = rank_resumes(sample_job(), top_k=2, method="combined", resumes=resumes, models_dir=tmp_path)
+    assert result["score"].between(0, 1).all()
+    assert result["required_skill_coverage"].between(0, 1).all()
+    assert result["preferred_skill_coverage"].between(0, 1).all()
+    assert result.iloc[0]["required_skill_coverage"] == 1.0

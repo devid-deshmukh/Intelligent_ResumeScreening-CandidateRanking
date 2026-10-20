@@ -60,9 +60,11 @@ Install the requirements, then launch the dashboard from the project root:
 venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-The dashboard includes job selection, ranking-method controls, candidate filters, CSV export, candidate detail explanations, and an evaluation page backed by `models/metrics.json`. The **Upload resumes and rank candidates** workspace accepts multiple PDF or DOCX resumes, extracts their text, and ranks successfully processed files against a custom job. Uploaded scores are not evaluated against ground-truth labels.
+The dashboard includes a dataset dashboard, one consolidated **Screen Candidates** workflow, CSV export, candidate detail explanations, an optional dataset explorer, and an evaluation page backed by `models/metrics.json`. Screen Candidates supports selecting an existing dataset job or configuring a custom role with editable role-based skill suggestions. It accepts multiple PDF or DOCX resumes, previews successfully extracted candidates, reports file-level failures, and ranks valid files against the configured job. Uploaded scores are not evaluated against ground-truth labels.
 
 PDF and DOCX extraction uses `pypdf` and `python-docx`, which are included in `requirements.txt`. Unreadable, unsupported, duplicate, and empty uploads are reported in the upload workflow without stopping other valid files from being ranked.
+
+The combined upload score is a bounded ranking score: 70% TF-IDF similarity, 22.5% required-skill coverage, and 7.5% preferred-skill coverage. The displayed percentage is only a presentation of that score, not hiring probability or accuracy. The saved evaluation metrics are calculated on the synthetic dataset; uploaded resumes do not have ground-truth labels.
 
 ## Limitations
 

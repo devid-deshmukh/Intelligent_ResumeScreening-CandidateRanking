@@ -10,6 +10,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from src.preprocess import clean_text
+from src.ranker import normalize_skill
 
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
@@ -59,8 +60,15 @@ def _skill_matches(text: str, skills: Iterable[str]) -> list[str]:
     normalized = clean_text(text)
     matches = []
     for skill in skills:
-        skill_text = clean_text(skill)
-        if skill_text and re.search(rf"\b{re.escape(skill_text)}\b", normalized):
+        skill_text = normalize_skill(skill)
+        aliases = [skill_text]
+        if skill_text == "python":
+            aliases.extend(["python 3", "python3", " py "])
+        elif skill_text == "javascript":
+            aliases.extend(["javascript", " js "])
+        elif skill_text == "sql":
+            aliases.extend(["sql", "structured query language"])
+        if skill_text and any(re.search(rf"\b{re.escape(alias.strip())}\b", normalized) for alias in aliases):
             matches.append(skill_text)
     return list(dict.fromkeys(matches))
 
