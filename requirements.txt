@@ -8,3 +8,6 @@ seaborn
 jupyter
 pytest
 pyarrow
+streamlit
+pypdf
+python-docx

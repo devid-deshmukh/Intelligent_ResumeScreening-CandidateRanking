@@ -31,6 +31,7 @@ venv\Scripts\python.exe -m src.preprocess
 venv\Scripts\python.exe -m src.train
 venv\Scripts\python.exe -m src.evaluate
 venv\Scripts\python.exe -m pytest -q
+venv\Scripts\python.exe -m streamlit run app.py
 ```
 
 Preprocessing writes cleaned resume and job files to `data/processed/`. Training writes `tfidf_vectorizer.joblib`, `ranker_model.joblib`, and `test_job_ids.json` to `models/`. Evaluation prints a comparison table and writes `models/metrics.json`.
@@ -50,6 +51,18 @@ venv\Scripts\python.exe -m src.rank_cli --title "Python Engineer" --must-have-sk
 ```
 
 Available methods are `tfidf`, `skills`, `combined`, and `learned`.
+
+## Streamlit dashboard
+
+Install the requirements, then launch the dashboard from the project root:
+
+```text
+venv\Scripts\python.exe -m streamlit run app.py
+```
+
+The dashboard includes job selection, ranking-method controls, candidate filters, CSV export, candidate detail explanations, and an evaluation page backed by `models/metrics.json`. The **Upload resumes and rank candidates** workspace accepts multiple PDF or DOCX resumes, extracts their text, and ranks successfully processed files against a custom job. Uploaded scores are not evaluated against ground-truth labels.
+
+PDF and DOCX extraction uses `pypdf` and `python-docx`, which are included in `requirements.txt`. Unreadable, unsupported, duplicate, and empty uploads are reported in the upload workflow without stopping other valid files from being ranked.
 
 ## Limitations
 
